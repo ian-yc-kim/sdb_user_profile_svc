@@ -41,6 +41,9 @@ class TestUserProfileMigrationFlow:
             versions_dir = "src/sdb_user_profile_svc/alembic/versions"
             config.set_main_option("version_locations", versions_dir)
             
+            # Enable batch mode for SQLite to handle constraint operations
+            config.set_section_option("alembic", "render_as_batch", "true")
+            
             # Set environment variable for env.py
             os.environ["DATABASE_URL"] = test_db_url
             
