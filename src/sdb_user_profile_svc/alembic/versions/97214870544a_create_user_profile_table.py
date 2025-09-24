@@ -18,7 +18,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Create user_profile table
+    # Create user_profile table with CHECK constraint defined inline
     op.create_table('user_profile',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
         sa.Column('name', sa.String(length=6), nullable=False),
@@ -31,31 +31,21 @@ def upgrade() -> None:
         sa.Column('created_at', sa.TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
         sa.Column('updated_at', sa.TIMESTAMP(timezone=True), server_default=func.now(), nullable=False),
         sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('id')
+        sa.UniqueConstraint('id'),
+        sa.CheckConstraint('age >= 0 AND age <= 200', name='chk_user_profile_age_range')
     )
     
     # Create indexes
     op.create_index('idx_user_profile_name', 'user_profile', ['name'], unique=False)
     op.create_index('idx_user_profile_region', 'user_profile', ['region'], unique=False)
     op.create_index('ix_user_profile_id', 'user_profile', ['id'], unique=False)
-    
-    # Add CHECK constraint for age (0 <= age <= 200)
-    # Note: SQLite parses but doesn't enforce CHECK constraints, PostgreSQL enforces them
-    op.create_check_constraint(
-        'chk_user_profile_age_range',
-        'user_profile',
-        'age >= 0 AND age <= 200'
-    )
 
 
 def downgrade() -> None:
-    # Drop CHECK constraint
-    op.drop_constraint('chk_user_profile_age_range', 'user_profile', type_='check')
-    
     # Drop indexes
     op.drop_index('ix_user_profile_id', table_name='user_profile')
     op.drop_index('idx_user_profile_region', table_name='user_profile')
     op.drop_index('idx_user_profile_name', table_name='user_profile')
     
-    # Drop table
+    # Drop table (this will also drop the CHECK constraint)
     op.drop_table('user_profile')

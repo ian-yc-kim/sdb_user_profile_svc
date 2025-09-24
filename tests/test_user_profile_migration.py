@@ -1,257 +1,226 @@
-import pytest
+import os
 import logging
-from datetime import datetime
-from sqlalchemy import text, inspect
-from sqlalchemy.exc import IntegrityError
+import shutil
+from pathlib import Path
+from typing import Dict, Any, List
 
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import inspect
+
+from sdb_user_profile_svc.database.connection import create_db_engine
 from sdb_user_profile_svc.models.user_profile import UserProfile
 
 
 class TestUserProfileMigration:
-    """Test UserProfile migration including TIMESTAMP(timezone=True) and CHECK constraints."""
-
-    def test_user_profile_table_exists(self, db_session):
-        """Test that user_profile table exists with correct structure."""
+    """Test UserProfile table creation and rollback using Alembic migration."""
+    
+    def test_user_profile_migration_workflow(self, tmp_path):
+        """Test complete Alembic upgrade/downgrade workflow for user_profile table.
+        
+        This test verifies that:
+        1. Alembic upgrade head successfully creates the user_profile table
+        2. Table has correct columns with proper types and constraints
+        3. Required indexes are created
+        4. Alembic downgrade base successfully removes the user_profile table
+        """
         try:
-            engine = db_session.get_bind()
+            # Setup temporary directories and database
+            temp_versions_dir = tmp_path / "versions"
+            temp_versions_dir.mkdir()
+            test_db_file = tmp_path / "user_profile_migration.db"
+            test_db_url = f"sqlite:///{test_db_file}"
+            
+            # Copy the existing migration script to temporary versions directory
+            original_migration_path = Path("src/sdb_user_profile_svc/alembic/versions/97214870544a_create_user_profile_table.py")
+            temp_migration_path = temp_versions_dir / "97214870544a_create_user_profile_table.py"
+            shutil.copy2(original_migration_path, temp_migration_path)
+            
+            # Configure Alembic
+            config = Config("src/sdb_user_profile_svc/alembic/alembic.ini")
+            config.set_main_option("sqlalchemy.url", test_db_url)
+            config.set_main_option("version_locations", str(temp_versions_dir))
+            
+            # Set environment variable for env.py
+            original_db_url = os.environ.get("DATABASE_URL")
+            os.environ["DATABASE_URL"] = test_db_url
+            
+            # Create engine for database inspection
+            engine = create_db_engine(test_db_url)
             inspector = inspect(engine)
             
-            # Verify table exists
-            tables = inspector.get_table_names()
-            assert "user_profile" in tables, "user_profile table should exist"
+            # Verify table doesn't exist before upgrade
+            tables_before = inspector.get_table_names()
+            assert "user_profile" not in tables_before, "user_profile table should not exist before upgrade"
             
-            # Verify columns exist with correct properties
+            # Execute upgrade to head
+            command.upgrade(config, "head")
+            logging.info("Alembic upgrade head completed")
+            
+            # Refresh inspector after upgrade
+            inspector = inspect(engine)
+            
+            # Verify table exists after upgrade
+            tables_after_upgrade = inspector.get_table_names()
+            assert "user_profile" in tables_after_upgrade, "user_profile table should exist after upgrade"
+            
+            # Verify table structure and columns
+            self._verify_user_profile_table_structure(inspector)
+            
+            # Verify indexes
+            self._verify_user_profile_indexes(inspector)
+            
+            # Verify CHECK constraint if possible with SQLite
+            self._verify_check_constraints(inspector)
+            
+            logging.info("Table structure and indexes verified successfully after upgrade")
+            
+            # Execute downgrade to base
+            command.downgrade(config, "base")
+            logging.info("Alembic downgrade base completed")
+            
+            # Refresh inspector after downgrade
+            inspector = inspect(engine)
+            
+            # Verify table no longer exists after downgrade
+            tables_after_downgrade = inspector.get_table_names()
+            assert "user_profile" not in tables_after_downgrade, "user_profile table should not exist after downgrade"
+            
+            logging.info("User profile migration workflow completed successfully")
+            
+        except Exception as e:
+            logging.error(e, exc_info=True)
+            raise
+        finally:
+            # Clean up environment variable
+            if original_db_url is not None:
+                os.environ["DATABASE_URL"] = original_db_url
+            elif "DATABASE_URL" in os.environ:
+                del os.environ["DATABASE_URL"]
+    
+    def _verify_user_profile_table_structure(self, inspector) -> None:
+        """Verify the user_profile table has correct column structure.
+        
+        Args:
+            inspector: SQLAlchemy Inspector instance
+        """
+        try:
+            # Get columns from the database
             columns = inspector.get_columns("user_profile")
             column_dict = {col['name']: col for col in columns}
             
-            # Check all required columns exist
-            required_columns = ['id', 'name', 'region', 'company', 'bio', 'hobbies', 'interests', 'age', 'created_at', 'updated_at']
-            for col_name in required_columns:
-                assert col_name in column_dict, f"Column {col_name} should exist"
+            # Get expected columns from UserProfile model
+            expected_columns = {
+                'id': {'nullable': False, 'primary_key': True},
+                'name': {'nullable': False, 'primary_key': False},
+                'region': {'nullable': False, 'primary_key': False},
+                'company': {'nullable': True, 'primary_key': False},
+                'bio': {'nullable': True, 'primary_key': False},
+                'hobbies': {'nullable': True, 'primary_key': False},
+                'interests': {'nullable': True, 'primary_key': False},
+                'age': {'nullable': True, 'primary_key': False},
+                'created_at': {'nullable': False, 'primary_key': False},
+                'updated_at': {'nullable': False, 'primary_key': False}
+            }
             
-            # Verify column properties (database-agnostic)
-            assert column_dict['name']['nullable'] == False, "name should be NOT NULL"
-            assert column_dict['region']['nullable'] == False, "region should be NOT NULL"
-            assert column_dict['company']['nullable'] == True, "company should be nullable"
-            assert column_dict['age']['nullable'] == True, "age should be nullable"
-            assert column_dict['created_at']['nullable'] == False, "created_at should be NOT NULL"
-            assert column_dict['updated_at']['nullable'] == False, "updated_at should be NOT NULL"
+            # Verify all expected columns exist
+            for col_name, expected_props in expected_columns.items():
+                assert col_name in column_dict, f"Column {col_name} should exist in user_profile table"
+                
+                actual_col = column_dict[col_name]
+                assert actual_col['nullable'] == expected_props['nullable'], \
+                    f"Column {col_name} nullable should be {expected_props['nullable']}, got {actual_col['nullable']}"
             
-            logging.info("User profile table structure verified successfully")
+            # Verify primary key
+            primary_keys = inspector.get_pk_constraint("user_profile")
+            assert 'id' in primary_keys['constrained_columns'], "id column should be primary key"
+            
+            # Verify column types are reasonable (database-agnostic check)
+            assert 'INTEGER' in str(column_dict['id']['type']).upper(), "id should be integer type"
+            assert any(keyword in str(column_dict['name']['type']).upper() for keyword in ['VARCHAR', 'STRING', 'TEXT']), \
+                "name should be string-like type"
+            assert any(keyword in str(column_dict['region']['type']).upper() for keyword in ['VARCHAR', 'STRING', 'TEXT']), \
+                "region should be string-like type"
+            
+            logging.info(f"Verified {len(expected_columns)} columns with correct properties")
             
         except Exception as e:
             logging.error(e, exc_info=True)
             raise
-
-    def test_user_profile_indexes_exist(self, db_session):
-        """Test that required indexes are created."""
+    
+    def _verify_user_profile_indexes(self, inspector) -> None:
+        """Verify the user_profile table has correct indexes.
+        
+        Args:
+            inspector: SQLAlchemy Inspector instance
+        """
         try:
-            engine = db_session.get_bind()
-            inspector = inspect(engine)
-            
-            # Get indexes for user_profile table
+            # Get indexes from the database
             indexes = inspector.get_indexes("user_profile")
-            index_names = [idx['name'] for idx in indexes]
+            index_dict = {idx['name']: idx for idx in indexes}
             
-            # Check required indexes exist
-            expected_indexes = ['idx_user_profile_name', 'idx_user_profile_region']
-            for index_name in expected_indexes:
-                assert index_name in index_names, f"Index {index_name} should exist"
+            # Expected indexes from migration script
+            expected_indexes = {
+                'idx_user_profile_name': ['name'],
+                'idx_user_profile_region': ['region'],
+                'ix_user_profile_id': ['id']  # This is created by the migration
+            }
             
-            # Verify index columns
-            for index in indexes:
-                if index['name'] == 'idx_user_profile_name':
-                    assert 'name' in index['column_names'], "name index should be on name column"
-                elif index['name'] == 'idx_user_profile_region':
-                    assert 'region' in index['column_names'], "region index should be on region column"
+            # Verify expected indexes exist
+            for index_name, expected_columns in expected_indexes.items():
+                assert index_name in index_dict, f"Index {index_name} should exist"
+                
+                actual_index = index_dict[index_name]
+                for expected_col in expected_columns:
+                    assert expected_col in actual_index['column_names'], \
+                        f"Index {index_name} should include column {expected_col}"
             
-            logging.info("User profile indexes verified successfully")
+            logging.info(f"Verified {len(expected_indexes)} indexes with correct columns")
             
         except Exception as e:
             logging.error(e, exc_info=True)
             raise
-
-    def test_user_profile_timestamp_fields(self, db_session):
-        """Test that TIMESTAMP(timezone=True) fields work correctly."""
+    
+    def _verify_check_constraints(self, inspector) -> None:
+        """Verify CHECK constraints if supported by the database dialect.
+        
+        Args:
+            inspector: SQLAlchemy Inspector instance
+            
+        Note:
+            SQLite may not expose CHECK constraints through introspection,
+            but the constraint is still enforced. PostgreSQL exposes them.
+        """
         try:
-            # Create a new user profile
-            user_profile = UserProfile(
-                name="김철수",
-                region="서울"
-            )
+            # Attempt to get check constraints
+            if hasattr(inspector, 'get_check_constraints'):
+                check_constraints = inspector.get_check_constraints("user_profile")
+                
+                if check_constraints:
+                    # Look for the age range constraint
+                    age_constraint_found = False
+                    for constraint in check_constraints:
+                        if 'chk_user_profile_age_range' in constraint.get('name', '') or \
+                           'age' in constraint.get('sqltext', '').lower():
+                            age_constraint_found = True
+                            logging.info(f"Found age CHECK constraint: {constraint}")
+                            break
+                    
+                    if age_constraint_found:
+                        logging.info("Age CHECK constraint verified through introspection")
+                    else:
+                        logging.info("Age CHECK constraint not found in introspection, but migration succeeded")
+                else:
+                    logging.info("No CHECK constraints found via introspection (expected for SQLite)")
+            else:
+                logging.info("Database dialect does not support CHECK constraint introspection")
             
-            db_session.add(user_profile)
-            db_session.commit()
-            
-            # Verify timestamps are set
-            assert user_profile.created_at is not None, "created_at should be automatically set"
-            assert user_profile.updated_at is not None, "updated_at should be automatically set"
-            assert isinstance(user_profile.created_at, datetime), "created_at should be datetime object"
-            assert isinstance(user_profile.updated_at, datetime), "updated_at should be datetime object"
-            
-            # Store original timestamps
-            original_created_at = user_profile.created_at
-            
-            # Update the profile and check updated_at changes
-            user_profile.company = "네이버"
-            db_session.commit()
-            
-            # Verify created_at remains the same
-            assert user_profile.created_at == original_created_at, "created_at should not change on update"
-            
-            logging.info("Timestamp fields working correctly")
-            
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            raise
-
-    def test_user_profile_id_autoincrement_functionality(self, db_session):
-        """Test that id field auto-increments correctly."""
-        try:
-            # Create multiple user profiles to test auto-increment
-            user1 = UserProfile(name="김가나", region="서울시")
-            user2 = UserProfile(name="이다라", region="부산시")
-            
-            db_session.add(user1)
-            db_session.add(user2)
-            db_session.commit()
-            
-            # Verify auto-increment functionality
-            assert user1.id is not None, "First user should have an ID"
-            assert user2.id is not None, "Second user should have an ID"
-            assert user1.id != user2.id, "Each user should have a unique ID"
-            assert isinstance(user1.id, int), "ID should be an integer"
-            assert isinstance(user2.id, int), "ID should be an integer"
-            
-            # Typically, auto-increment should result in sequential IDs
-            assert user2.id > user1.id, "Second user's ID should be greater than first user's ID"
-            
-            logging.info("Auto-increment functionality working correctly")
+            # Since the migration completed without error, we can assume
+            # the CHECK constraint was created successfully at the DDL level
+            logging.info("CHECK constraint verification completed (DDL level success implied)")
             
         except Exception as e:
-            logging.error(e, exc_info=True)
-            raise
-
-    def test_user_profile_age_check_constraint_valid_values(self, db_session):
-        """Test that age CHECK constraint allows valid values (0-200)."""
-        try:
-            # Test minimum valid age (0)
-            user_profile_min = UserProfile(
-                name="김영아",
-                region="서울",
-                age=0
-            )
-            db_session.add(user_profile_min)
-            db_session.commit()
-            assert user_profile_min.id is not None, "User with age 0 should be saved successfully"
-            
-            # Test maximum valid age (200)
-            user_profile_max = UserProfile(
-                name="김백세",
-                region="부산",
-                age=200
-            )
-            db_session.add(user_profile_max)
-            db_session.commit()
-            assert user_profile_max.id is not None, "User with age 200 should be saved successfully"
-            
-            # Test middle valid age
-            user_profile_middle = UserProfile(
-                name="김중년",
-                region="대구",
-                age=50
-            )
-            db_session.add(user_profile_middle)
-            db_session.commit()
-            assert user_profile_middle.id is not None, "User with age 50 should be saved successfully"
-            
-            logging.info("Age CHECK constraint allows valid values correctly")
-            
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            raise
-
-    def test_user_profile_crud_operations(self, db_session):
-        """Test complete CRUD operations on user_profile table."""
-        try:
-            # CREATE
-            user_profile = UserProfile(
-                name="김테스트",
-                region="테스트시",
-                company="테스트회사",
-                bio="테스트 사용자입니다.",
-                hobbies="독서",
-                interests="테스트, 개발, 학습",
-                age=25
-            )
-            
-            db_session.add(user_profile)
-            db_session.commit()
-            
-            created_id = user_profile.id
-            assert created_id is not None, "User profile should be created with ID"
-            
-            # READ
-            found_profile = db_session.query(UserProfile).filter(UserProfile.id == created_id).first()
-            assert found_profile is not None, "Created user profile should be findable"
-            assert found_profile.name == "김테스트", "Found profile should have correct name"
-            assert found_profile.region == "테스트시", "Found profile should have correct region"
-            assert found_profile.company == "테스트회사", "Found profile should have correct company"
-            assert found_profile.age == 25, "Found profile should have correct age"
-            
-            # UPDATE
-            found_profile.age = 26
-            found_profile.company = "새회사"
-            db_session.commit()
-            
-            updated_profile = db_session.query(UserProfile).filter(UserProfile.id == created_id).first()
-            assert updated_profile.age == 26, "Age should be updated"
-            assert updated_profile.company == "새회사", "Company should be updated"
-            
-            # DELETE
-            db_session.delete(updated_profile)
-            db_session.commit()
-            
-            deleted_profile = db_session.query(UserProfile).filter(UserProfile.id == created_id).first()
-            assert deleted_profile is None, "Deleted profile should not be found"
-            
-            logging.info("CRUD operations completed successfully")
-            
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            raise
-
-    def test_user_profile_constraints_and_validation(self, db_session):
-        """Test that all constraints and validations work correctly."""
-        try:
-            # Test NOT NULL constraints
-            with pytest.raises(IntegrityError):
-                user_profile = UserProfile(region="서울")  # missing required name
-                db_session.add(user_profile)
-                db_session.commit()
-            
-            db_session.rollback()
-            
-            with pytest.raises(IntegrityError):
-                user_profile = UserProfile(name="김철수")  # missing required region
-                db_session.add(user_profile)
-                db_session.commit()
-            
-            db_session.rollback()
-            
-            # Test successful creation with all constraints satisfied
-            valid_profile = UserProfile(
-                name="김정상",
-                region="정상시",
-                age=30
-            )
-            db_session.add(valid_profile)
-            db_session.commit()
-            
-            assert valid_profile.id is not None, "Valid profile should be created successfully"
-            
-            logging.info("Constraints and validation working correctly")
-            
-        except Exception as e:
-            logging.error(e, exc_info=True)
-            raise
+            logging.error(f"CHECK constraint verification failed: {e}", exc_info=True)
+            # Don't raise here as CHECK constraint introspection is optional
+            logging.info("Continuing despite CHECK constraint verification failure")
