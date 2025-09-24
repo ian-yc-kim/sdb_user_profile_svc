@@ -1,10 +1,8 @@
 import os
 from dotenv import load_dotenv
 from sdb_user_profile_svc.models import Base
+from sdb_user_profile_svc.database.connection import create_db_engine
 from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
 
 from alembic import context
 
@@ -33,11 +31,11 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    # Get the database URL from alembic configuration
+    url = config.get_main_option("sqlalchemy.url")
+    
+    # Use create_db_engine instead of engine_from_config
+    connectable = create_db_engine(url)
 
     with connectable.connect() as connection:
         context.configure(
