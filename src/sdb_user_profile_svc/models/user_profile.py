@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Index, func
+from sqlalchemy import Column, Integer, String, Text, Index, func
+import sqlalchemy.types
 from sqlalchemy.orm import validates
 from .base import Base
 from sdb_user_profile_svc.utils.validation import is_korean_only, has_special_characters
@@ -15,8 +16,8 @@ class UserProfile(Base):
     hobbies = Column(String(10), nullable=True)
     interests = Column(Text, nullable=True)
     age = Column(Integer, nullable=True)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
-    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    created_at = Column(sqlalchemy.types.TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(sqlalchemy.types.TIMESTAMP(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
     @validates('name')
     def validate_name(self, key, value):
