@@ -40,15 +40,24 @@ class TestPackageStructure:
             except ImportError as e:
                 pytest.fail(f"Failed to import {package_name}: {e}")
     
-    def test_env_example_exists_and_empty(self):
-        """Test that .env.example exists at repo root and is empty."""
+    def test_env_example_exists_and_contains_examples(self):
+        """Test that .env.example exists at repo root and contains environment variable examples."""
         env_example_path = Path(".env.example")
         
         # Assert .env.example exists and is a file
         assert env_example_path.exists(), ".env.example file does not exist at repo root"
         assert env_example_path.is_file(), ".env.example is not a file"
         
-        # Assert file is empty or contains only whitespace
+        # Read and verify content
         with open(env_example_path, 'r') as f:
-            content = f.read().strip()
-            assert content == "", ".env.example should be empty or contain only whitespace"
+            content = f.read()
+        
+        # Assert file contains expected environment variable examples
+        assert "DATABASE_URL=" in content, ".env.example should contain DATABASE_URL example"
+        assert "postgresql://" in content, ".env.example should contain PostgreSQL example"
+        assert "sqlite:///" in content, ".env.example should contain SQLite file example"
+        assert "sqlite:///:memory:" in content, ".env.example should contain SQLite memory example"
+        assert "SERVICE_PORT=" in content, ".env.example should contain SERVICE_PORT example"
+        
+        # Assert file is not empty
+        assert len(content.strip()) > 0, ".env.example should not be empty"
