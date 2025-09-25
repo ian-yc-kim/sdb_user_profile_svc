@@ -1,4 +1,5 @@
 import pytest
+import time
 from datetime import datetime
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
@@ -259,3 +260,230 @@ class TestUserProfileModel:
         assert user_profile.updated_at is not None
         assert isinstance(user_profile.created_at, datetime)
         assert isinstance(user_profile.updated_at, datetime)
+
+    # NEW TESTS FOR @validates METHODS
+    
+    def test_validate_name_accepts_korean_and_spaces(self, db_session):
+        """Test that name validator accepts valid Korean characters and spaces."""
+        user_profile = UserProfile(name="홍 길동", region="서울")
+        db_session.add(user_profile)
+        db_session.commit()
+        
+        assert user_profile.name == "홍 길동"
+        assert user_profile.id is not None
+
+    def test_validate_name_rejects_non_korean_and_special(self, db_session):
+        """Test that name validator rejects non-Korean characters and special characters."""
+        # Test with English characters
+        with pytest.raises(ValueError, match="name must contain only Korean characters and spaces"):
+            UserProfile(name="John", region="서울")
+        
+        # Test with special characters
+        with pytest.raises(ValueError, match="name must contain only Korean characters and spaces"):
+            UserProfile(name="홍!", region="서울")
+
+    def test_validate_name_length_boundaries(self, db_session):
+        """Test name length validation at boundaries."""
+        # Test exact max length (6 characters)
+        user_profile = UserProfile(name="가" * 6, region="서울")
+        db_session.add(user_profile)
+        db_session.commit()
+        assert user_profile.id is not None
+        
+        # Test over max length (7 characters)
+        with pytest.raises(ValueError, match="name length must be at most 6 characters"):
+            UserProfile(name="가" * 7, region="서울")
+
+    def test_validate_name_empty_or_none_rejected(self, db_session):
+        """Test that empty or None name values are rejected."""
+        # Test empty string
+        with pytest.raises(ValueError, match="name is required"):
+            UserProfile(name="", region="서울")
+        
+        # Test None
+        with pytest.raises(ValueError, match="name is required"):
+            UserProfile(name=None, region="서울")
+        
+        # Test whitespace only
+        with pytest.raises(ValueError, match="name is required"):
+            UserProfile(name="   ", region="서울")
+
+    def test_validate_region_accepts_korean_and_spaces(self, db_session):
+        """Test that region validator accepts valid Korean characters and spaces."""
+        # Test with space
+        user_profile1 = UserProfile(name="김철수", region="경 북")
+        db_session.add(user_profile1)
+        db_session.commit()
+        assert user_profile1.region == "경 북"
+        
+        # Test max length
+        user_profile2 = UserProfile(name="김철수", region="가" * 10)
+        db_session.add(user_profile2)
+        db_session.commit()
+        assert user_profile2.region == "가" * 10
+
+    def test_validate_region_rejects_non_korean_and_special(self, db_session):
+        """Test that region validator rejects non-Korean and special characters."""
+        # Test with English characters
+        with pytest.raises(ValueError, match="region must contain only Korean characters and spaces"):
+            UserProfile(name="김철수", region="Seoul")
+        
+        # Test with special characters
+        with pytest.raises(ValueError, match="region must contain only Korean characters and spaces"):
+            UserProfile(name="김철수", region="부산@")
+
+    def test_validate_region_length_boundaries(self, db_session):
+        """Test region length validation at boundaries."""
+        # Test exact max length (10 characters)
+        user_profile = UserProfile(name="김철수", region="가" * 10)
+        db_session.add(user_profile)
+        db_session.commit()
+        assert user_profile.id is not None
+        
+        # Test over max length (11 characters)
+        with pytest.raises(ValueError, match="region length must be at most 10 characters"):
+            UserProfile(name="김철수", region="가" * 11)
+
+    def test_validate_region_empty_or_none_rejected(self, db_session):
+        """Test that empty or None region values are rejected."""
+        # Test empty string
+        with pytest.raises(ValueError, match="region is required"):
+            UserProfile(name="김철수", region="")
+        
+        # Test None
+        with pytest.raises(ValueError, match="region is required"):
+            UserProfile(name="김철수", region=None)
+        
+        # Test whitespace only
+        with pytest.raises(ValueError, match="region is required"):
+            UserProfile(name="김철수", region="   ")
+
+    def test_validate_company_none_and_empty_ok(self, db_session):
+        """Test that company field accepts None and empty string."""
+        # Test with None
+        user_profile1 = UserProfile(name="김철수", region="서울", company=None)
+        db_session.add(user_profile1)
+        db_session.commit()
+        assert user_profile1.company is None
+        
+        # Test with empty string
+        user_profile2 = UserProfile(name="김철수", region="서울", company="")
+        db_session.add(user_profile2)
+        db_session.commit()
+        assert user_profile2.company == ""
+
+    def test_validate_company_korean_only_and_length(self, db_session):
+        """Test company Korean-only validation and length limits."""
+        # Test valid Korean company name at max length
+        user_profile = UserProfile(name="김철수", region="서울", company="가" * 10)
+        db_session.add(user_profile)
+        db_session.commit()
+        assert user_profile.company == "가" * 10
+        
+        # Test over max length
+        with pytest.raises(ValueError, match="company length must be at most 10 characters"):
+            UserProfile(name="김철수", region="서울", company="가" * 11)
+        
+        # Test non-Korean characters
+        with pytest.raises(ValueError, match="company must contain only Korean characters and spaces"):
+            UserProfile(name="김철수", region="서울", company="Google")
+
+    def test_validate_bio_length(self, db_session):
+        """Test bio length validation."""
+        # Test valid length (128 characters)
+        valid_bio = "안녕하세요! " * 10 + "개발자입니다."  # Ensure it's exactly 128 chars or less
+        valid_bio = valid_bio[:128]  # Truncate to exactly 128 characters
+        user_profile = UserProfile(name="김철수", region="서울", bio=valid_bio)
+        db_session.add(user_profile)
+        db_session.commit()
+        assert user_profile.bio == valid_bio
+        
+        # Test over length (129 characters)
+        invalid_bio = "가" * 129
+        with pytest.raises(ValueError, match="bio length must be at most 128 characters"):
+            UserProfile(name="김철수", region="서울", bio=invalid_bio)
+
+    def test_validate_hobbies_valid_characters(self, db_session):
+        """Test hobbies validation with valid characters."""
+        # Test English
+        user_profile1 = UserProfile(name="김철수", region="서울", hobbies="Reading")
+        db_session.add(user_profile1)
+        db_session.commit()
+        assert user_profile1.hobbies == "Reading"
+        
+        # Test Korean
+        user_profile2 = UserProfile(name="김철수", region="서울", hobbies="독서")
+        db_session.add(user_profile2)
+        db_session.commit()
+        assert user_profile2.hobbies == "독서"
+        
+        # Test mixed with numbers
+        user_profile3 = UserProfile(name="김철수", region="서울", hobbies="독서123")
+        db_session.add(user_profile3)
+        db_session.commit()
+        assert user_profile3.hobbies == "독서123"
+
+    def test_validate_hobbies_rejects_special_chars(self, db_session):
+        """Test that hobbies rejects special characters."""
+        with pytest.raises(ValueError, match="hobbies cannot contain special characters"):
+            UserProfile(name="김철수", region="서울", hobbies="등산!")
+
+    def test_validate_hobbies_length(self, db_session):
+        """Test hobbies length validation."""
+        # Test max length (10 characters)
+        user_profile = UserProfile(name="김철수", region="서울", hobbies="가" * 10)
+        db_session.add(user_profile)
+        db_session.commit()
+        assert user_profile.hobbies == "가" * 10
+        
+        # Test over length (11 characters)
+        with pytest.raises(ValueError, match="hobbies length must be at most 10 characters"):
+            UserProfile(name="김철수", region="서울", hobbies="가" * 11)
+
+    def test_validate_age_boundaries(self, db_session):
+        """Test age validation at boundaries."""
+        # Test minimum age (0)
+        user_profile1 = UserProfile(name="김철수", region="서울", age=0)
+        db_session.add(user_profile1)
+        db_session.commit()
+        assert user_profile1.age == 0
+        
+        # Test maximum age (200)
+        user_profile2 = UserProfile(name="김철수", region="서울", age=200)
+        db_session.add(user_profile2)
+        db_session.commit()
+        assert user_profile2.age == 200
+
+    def test_validate_age_out_of_range(self, db_session):
+        """Test age validation rejects out-of-range values."""
+        # Test below minimum (-1)
+        with pytest.raises(ValueError, match="age must be between 0 and 200 inclusive"):
+            UserProfile(name="김철수", region="서울", age=-1)
+        
+        # Test above maximum (201)
+        with pytest.raises(ValueError, match="age must be between 0 and 200 inclusive"):
+            UserProfile(name="김철수", region="서울", age=201)
+
+    def test_timestamps_on_create_and_update_robust(self, db_session):
+        """Test robust timestamp behavior on create and update."""
+        # Create profile
+        user_profile = UserProfile(name="김철수", region="서울")
+        db_session.add(user_profile)
+        db_session.commit()
+        
+        # Verify initial timestamps
+        assert user_profile.created_at is not None
+        assert user_profile.updated_at is not None
+        original_updated_at = user_profile.updated_at
+        
+        # Wait to ensure timestamp difference
+        time.sleep(1.1)
+        
+        # Update a field
+        user_profile.company = "네이버"
+        db_session.commit()
+        db_session.refresh(user_profile)
+        
+        # Verify updated_at has changed
+        assert user_profile.updated_at > original_updated_at
+        assert user_profile.company == "네이버"
